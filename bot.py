@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import os
 import sys
@@ -28,6 +28,51 @@ MONGO_COLLECTION = os.getenv("MONGO_COLLECTION")
 client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_AUTH)
 db = client[MONGO_DB]
 collection = db[MONGO_COLLECTION]
+
+
+def add_month(start_date):
+    """Добавляет месяц к текущей дате
+
+    Args:
+        start_date: дата
+    """
+    # Если текущий месяц - декабрь, увеличиваем год и устанавливаем месяц январем
+    if start_date.month == 12:
+        next_month = start_date.replace(year=start_date.year + 1, month=1)
+    else:
+        next_month = start_date.replace(month=start_date.month + 1)
+    return next_month
+
+def generate_delta(dt_from, dt_upto, group_type):
+    """Генерирует список временных точек, в диапазоне от dt_from до dt_upto, в зависимости от group_type
+
+    Args:
+        dt_from: Дата и время старта агрегации
+        dt_upto: Дата и время окончания агрегации
+        group_type (str): тип агрегации (hour, day, month)
+
+    Returns:
+        list: Список временных точек в указанном промежутке
+    """
+
+    # Определяем метки времени начала и конца
+    start = datetime.fromisoformat(dt_from)
+    end = datetime.fromisoformat(dt_upto)
+    times = [start.strftime("%Y-%m-%dT%H:00:00")]
+    
+    while start <= end:  # Изменено с < на <=
+        if group_type == 'hour':
+            start += timedelta(hours=1)
+        elif group_type == 'day':
+            start += timedelta(days=1)
+        else:
+            # Ввиду отсутсвия у timedelta атрибута months - напишем функцию сами
+            start = add_month(start)
+        
+        if start <= end:
+            times.append(start.strftime("%Y-%m-%dT%H:00:00"))
+    
+    return times
 
 
 @dp.message()
@@ -85,13 +130,21 @@ async def handle_json(message: types.Message):
         {"$sort": {"_id": 1}}
     ]
 
-    # Выполняем запрос и преобразуем в python List (length устанавливаем на максимум)
+    # Выполняем запрос и преобразуем в python List (length устанавливает максимальное кол-во выводимых результатов)
     result = await collection.aggregate(query).to_list(length=999999)
 
-    # Формируем ответ бота
+    # Для удобства использования преобразуем результат в словарь python
+    result_dict = {item['_id']: item['count'] for item in result}
+
+    # Получаем временные метки из данного диапазона
+    times = generate_delta(dt_from, dt_upto, group_type)
+
+    # Заполняем недостающие значения нулями
+    dataset = [result_dict.get(timestamp, 0) for timestamp in times] 
+
     response = {
-        'dataset': [item['count'] for item in result],
-        'labels': [item['_id'] for item in result]
+        'dataset': dataset,
+        'labels': times
     }
 
     await message.answer(dumps(response))
